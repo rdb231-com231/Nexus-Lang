@@ -44,7 +44,7 @@ class RTError(Error):
 	def as_string(self):
 		result = self.generate_traceback()
 		result += f'{self.error_name}: {self.details}'
-		result += '\n\n' + string_with_arrows(self.pos_start.ftxt, self.pos_start, self.pos_end)
+		result += '\n\n' + strings_with_arrows(self.pos_start.ftxt, self.pos_start, self.pos_end)
 		return result
 
 	def generate_traceback(self):
