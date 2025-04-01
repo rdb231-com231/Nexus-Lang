@@ -32,6 +32,10 @@ class InvalidSyntaxError(Error):
 	def __init__(self, pos_start, pos_end, details=''):
 		super().__init__(pos_start, pos_end, 'Invalid Syntax', details)
 
+class CheckConditionError(Error):
+	def __init__(self, pos_start, pos_end, details=''):
+		super().__init__(pos_start, pos_end, 'Condition Value Expected', details)
+
 class RTError(Error):
 	def __init__(self, pos_start, pos_end, details, context):
 		super().__init__(pos_start, pos_end, 'Runtime Error', details)
@@ -120,7 +124,8 @@ KEYWORDS = [
 	'end',
 	'return',
 	'continue',
-	'break'
+	'break',
+	'check'
 ]
 
 class Token:
@@ -205,12 +210,7 @@ class Lexer:
 				tokens.append(Token(TT_COMMA, pos_start=self.pos))
 				self.advance()
 			elif self.current_char == '=':
-				self.advance()
-				if self.current_char == '>':
-					tokens.append(Token(TT_ARROW, pos_start=self.pos))
-					self.advance()
-				else:
-					tokens.append(self.make_equals())
+				tokens.append(self.make_equals())				
 			elif self.current_char == '<':
 				tokens.append(self.make_less_than())
 			elif self.current_char == '>':
@@ -302,6 +302,9 @@ class Lexer:
 		if self.current_char == '=':
 			self.advance()
 			tok_type = TT_EE
+		elif self.current_char == ">":
+			self.advance()
+			tok_type == TT_ARROW
 
 		return Token(tok_type, pos_start=pos_start, pos_end=self.pos)
 
@@ -397,7 +400,13 @@ class IfNode:
 		self.cases = cases
 		self.else_case = else_case
 		self.pos_start = self.cases[0][0].pos_start
-		self.pos_end = (self.else_case or self.cases[len(self.cases) - 1][0]).pos_end
+		self.pos_end = (self.else_case or self.cases[len(self.cases) - 1])[0].pos_end
+
+class CheckNode:
+	def __init__(self, case, pos_start, pos_end):
+		self.condition = case
+		self.pos_start = pos_start
+		self.pos_end = pos_end
 
 class ForNode:
 	def __init__(self, var_name_tok, start_value_node, end_value_node, step_value_node, body_node, should_return_null):
@@ -596,6 +605,21 @@ class Parser:
 		if res.error: return res
 		cases, else_case = all_cases
 		return res.success(IfNode(cases, else_case))
+	
+	def check_expr(self):
+		res = ParseResult()
+		if self.current_tok.matches(TT_KEYWORD, 'check'):
+			pos_start = self.current_tok.pos_start.copy()
+			res.register_advancement()
+			self.advance()
+			condition = res.register(self.expr())
+			if res.error: return res
+			return res.success(CheckNode(condition, pos_start, self.current_tok.pos_end.copy()))
+		else:
+			return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                "Expected 'check'"
+            ))
 
 	def if_expr_b(self):
 		return self.if_expr_cases('elif')
@@ -915,6 +939,11 @@ class Parser:
 			if_expr = res.register(self.if_expr())
 			if res.error: return res
 			return res.success(if_expr)
+		
+		elif tok.matches(TT_KEYWORD, 'check'):
+			check_expr = res.register(self.check_expr())
+			if res.error: return res
+			return res.success(check_expr)
 
 		elif tok.matches(TT_KEYWORD, 'range'):
 			for_expr = res.register(self.for_expr())
@@ -1098,7 +1127,7 @@ class Parser:
 		if res.error:
 			return res.failure(InvalidSyntaxError(
 				self.current_tok.pos_start, self.current_tok.pos_end,
-				"Expected 'nexus', int, float, identifier, '+', '-', '(', '[' or 'not'"
+				"Expected 'nexus', int, float, list, string, identifier, '+', '-', '(', '[' or 'not'"
 			))
 
 		return res.success(node)
@@ -1489,6 +1518,17 @@ class String(Value):
 			return String(self.value * other.value).set_context(self.context), None
 		else:
 			return None, Value.illegal_operation(self, other)
+	def get_comparison_eq(self, other):
+		if isinstance(other, String):
+			return Number(int(self.value == other.value)).set_context(self.context), None
+		else:
+			return None, Value.illegal_operation(self, other)
+
+	def get_comparison_ne(self, other):
+		if isinstance(other, Number):
+			return Number(int(self.value != other.value)).set_context(self.context), None
+		else:
+			return None, Value.illegal_operation(self, other)
 	
 	def is_true(self):
 		return len(self.value) > 0 
@@ -1762,8 +1802,8 @@ class BuiltInFunction(BaseFunction):
 			))
 		
 		try:
-			element = list_.elements.pop(index.value)
-			return RTResult().success(element)
+			list_.elements.pop(index.value)
+			return RTResult().success(list_.elements)
 		except:
 			return RTResult().failure(RTError(
 				self.pos_start, self.pos_end,
@@ -1963,15 +2003,20 @@ class BuiltInFunction(BaseFunction):
 
 	def execute_type(self, exec_ctx):
 		value = exec_ctx.symbol_table.get("value")
-		if isinstance(value, Number): return RTResult().success(String('int'))
-		if isinstance(value, List): return RTResult().success(String('list'))
-		if isinstance(value, String): return RTResult().success(String('str'))
-		if isinstance(value, Function): return RTResult().success(String('function'))
-		return RTResult().failure(RTError(
-                self.pos_start, self.pos_end,
-                "Argument must be a number, string, list, or function.",
-                exec_ctx
-            ))
+		if isinstance(value, Number):
+			return RTResult().success(String('int'))
+		elif isinstance(value, String):
+			return RTResult().success(String('str'))
+		elif isinstance(value, List):
+			return RTResult().success(String('list'))
+		elif isinstance(value, Function):
+			return RTResult().success(String('function'))
+		else:
+			return RTResult().failure(RTError(
+				self.pos_start, self.pos_end,
+				"Type check failed",
+				exec_ctx
+			))
 	execute_type.arg_names = ['value']
 
 	def execute_join(self, exec_ctx):
@@ -2164,6 +2209,20 @@ class Interpreter:
 			return res.success(Number.null if should_return_null else expr_value)
 
 		return res.success(Number.null)
+	
+	def visit_CheckNode(self, node, context):
+		res = RTResult()
+		condition = node.condition
+		condition_value = res.register(self.visit(condition, context))
+		if res.should_return(): return res
+
+		if condition_value.is_true():
+			return res.success(Number.true)
+		else:
+			return res.failure(CheckConditionError(
+				node.pos_start, node.pos_end,
+				f"Expected condition to be True, but got {False if condition_value.value == 0 else True}",
+			))
 
 	def visit_ForNode(self, node, context):
 		res = RTResult()

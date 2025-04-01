@@ -1,0 +1,7 @@
+nexus abc = 12
+
+switch abc
+    default => write("Hi")
+    case 12 => write("This works!")
+    case 13 => write("Math is bruken")
+end
