@@ -1762,8 +1762,8 @@ class BuiltInFunction(BaseFunction):
 			))
 		
 		try:
-			element = list_.elements.pop(index.value)
-			return RTResult().success(element)
+			list_.elements.pop(index.value)
+			return RTResult().success(list_.elements)
 		except:
 			return RTResult().failure(RTError(
 				self.pos_start, self.pos_end,
