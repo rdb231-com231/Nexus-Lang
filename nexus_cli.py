@@ -12,12 +12,14 @@ class NexusShell(cmd.Cmd):
         """
         if filename:
             try:
-                interpreter.run(filename, file=filename)
+                _, err = interpreter.run(filename, file=filename)
+                if err:
+                    print(str(err))
             except Exception as e:
                 print(f"Error: {str(e)}")
         else:
             print("Usage: nexus <filename/path>")
-            
+
 
     def do_docs(self):
         """

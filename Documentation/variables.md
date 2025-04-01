@@ -14,6 +14,13 @@ nexus myvar, myvar2, myvar3 = "Hello, World!"
 ```
 All in which [`myvar`, `myvar2`, `myvar3`] have the same value [`"Hello, World!"`]
 
+---
 
 ## SETTING A VARIABLE
-SETTING A VARIABLE FOLLOWS THE SAME CODE FROM (CREATING A VARIABLE)[##CREATING-A-VARIABLE]
+
+SETTING A VARIABLE FOLLOWS THE SAME CODE FROM [CREATING A VARIABLE](#CREATING-A-VARIABLE)
+
+---
+
+## GETTING VARIABLES CONTENT
+
