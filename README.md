@@ -76,7 +76,7 @@ Related operations follow basic math rules, they include: `sum (+)`, `sub (-)`, 
 
 ### LIST
 
-### Built-In Functions on Types 
+### Built-In Functions on Types
 
 You can get a variable or value type using:
 ```

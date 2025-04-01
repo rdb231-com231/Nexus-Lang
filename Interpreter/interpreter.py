@@ -1,4 +1,4 @@
-from strings_with_arrows import *
+from Interpreter import strings_with_arrows
 import string
 import os
 from typing import Any
@@ -17,7 +17,7 @@ class Error:
 	def as_string(self):
 		result = f'{self.error_name}: {self.details}\n'
 		result += f'File {self.pos_start.fn}, line {self.pos_start.ln + 1}'
-		result += '\n\n' + string_with_arrows(self.pos_start.ftxt, self.pos_start, self.pos_end)
+		result += '\n\n' + strings_with_arrows.string_with_arrows(self.pos_start.ftxt, self.pos_start, self.pos_end)
 		return result
 
 class IllegalCharError(Error):
@@ -2363,9 +2363,16 @@ global_symbol_table.set("str", BuiltInFunction.str)
 global_symbol_table.set("join", BuiltInFunction.join)
 global_symbol_table.set("type", BuiltInFunction.type)
 
-def run(fn, text, file=None):
+def run(fn, text=None, file=None):
 	# Generate tokens
-	lexer = Lexer(fn, text)
+	file = str(file)
+	if file:
+		if not str(file).endswith('.nxs'): file += '.nxs'
+		with open(file, 'r') as f:
+			script = f.read()
+	else:
+		script = text
+	lexer = Lexer(fn, script)
 	tokens, error = lexer.make_tokens()
 	if error: return None, error
 	
