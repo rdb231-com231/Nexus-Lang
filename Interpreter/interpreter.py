@@ -23,18 +23,26 @@ class Error:
 class IllegalCharError(Error):
 	def __init__(self, pos_start, pos_end, details):
 		super().__init__(pos_start, pos_end, 'Illegal Character', details)
+	def __str__(self):
+		return self.as_string()
 
 class ExpectedCharError(Error):
 	def __init__(self, pos_start, pos_end, details):
 		super().__init__(pos_start, pos_end, 'Expected Character', details)
+	def __str__(self):
+		return self.as_string()
 
 class InvalidSyntaxError(Error):
 	def __init__(self, pos_start, pos_end, details=''):
 		super().__init__(pos_start, pos_end, 'Invalid Syntax', details)
+	def __str__(self):
+		return self.as_string()
 
 class CheckConditionError(Error):
 	def __init__(self, pos_start, pos_end, details=''):
 		super().__init__(pos_start, pos_end, 'Condition Value Expected', details)
+	def __str__(self):
+		return self.as_string()
 
 class RTError(Error):
 	def __init__(self, pos_start, pos_end, details, context):
@@ -58,6 +66,9 @@ class RTError(Error):
 			ctx = ctx.parent
 
 		return 'Traceback (most recent call last):\n' + result
+	
+	def __str__(self):
+		return self.as_string()
 
 class Position:
 	def __init__(self, idx, ln, col, fn, ftxt):
@@ -125,7 +136,9 @@ KEYWORDS = [
 	'return',
 	'continue',
 	'break',
-	'check'
+	'check',
+	'raise',
+	'as'
 ]
 
 class Token:
@@ -353,6 +366,11 @@ class ListNode:
 		self.element_nodes = element_nodes
 		self.pos_start = pos_start
 		self.pos_end = pos_end
+
+class RaiseNode:
+	def __init__(self, error, value, pos_start, pos_end):
+		self.error = error; self.value = value
+		self.pos_start = pos_start; self.pos_end = pos_end
 
 class VarAccessNode:
 	def __init__(self, var_name_tok):
@@ -592,6 +610,11 @@ class Parser:
 			self.advance()
 			return res.success(BreakNode(pos_start, self.current_tok.pos_start.copy()))
 
+		if self.current_tok.matches(TT_KEYWORD, 'raise'):
+			res.register_advancement()
+			self.advance()
+			return res.success(self.raise_expr())
+
 		expr = res.register(self.expr())
 		if res.error: return res.failure(InvalidSyntaxError(
 			self.current_tok.pos_start, self.current_tok.pos_end,
@@ -605,7 +628,57 @@ class Parser:
 		if res.error: return res
 		cases, else_case = all_cases
 		return res.success(IfNode(cases, else_case))
-	
+
+	def raise_expr(self):
+		res = ParseResult()
+		pos_start = self.current_tok.pos_start.copy()
+		if not self.current_tok.matches(TT_KEYWORD, 'raise'):
+			return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                "Expected 'raise'"
+            ))
+
+		res.register_advancement()
+		self.advance()
+
+		if self.current_tok.value == "InvalidSyntaxError":
+			to_raise = "InvalidSyntaxError"
+		elif self.current_tok.value == "InvalidOperationError":
+			to_raise = "InvalidOperationError"
+		elif self.current_tok.value == "CheckConditionError":
+			to_raise = "CheckConditionError"
+		elif self.current_tok.value == "ExpectedCharError":
+			to_raise = "ExpectedCharError"
+		elif self.current_tok.value == "RuntimeError":
+			to_raise = "RuntimeError"
+		else:
+			return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                f"Invalid raise type '{self.current_tok.value}'"
+            ))
+
+		res.register_advancement()
+		self.advance()
+
+		if not self.current_tok.matches(TT_KEYWORD, 'as'):
+			return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                "Expected 'as'"
+            ))
+		res.register_advancement()
+		self.advance()
+
+		if not self.current_tok.type == TT_STRING:
+			return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                "Expected string literal"
+            ))
+
+		value = self.current_tok.value
+		res.register_advancement()
+		self.advance()
+		return res.success(RaiseNode(to_raise, value, pos_start, self.current_tok.pos_end.copy()))
+
 	def check_expr(self):
 		res = ParseResult()
 		if self.current_tok.matches(TT_KEYWORD, 'check'):
@@ -757,6 +830,12 @@ class Parser:
 		start_value = res.register(self.expr())
 		if res.error: return res
 
+		if not self.current_tok.type == TT_COMMA:
+			return res.failure(InvalidSyntaxError(
+				self.current_tok.pos_start, self.current_tok.pos_end,
+                f"Expected ','"
+			))
+
 		if not self.current_tok.matches(TT_KEYWORD, 'to'):
 			return res.failure(InvalidSyntaxError(
 				self.current_tok.pos_start, self.current_tok.pos_end,
@@ -769,12 +848,18 @@ class Parser:
 		end_value = res.register(self.expr())
 		if res.error: return res
 
-		if self.current_tok.matches(TT_KEYWORD, 'change'):
-			res.register_advancement()
-			self.advance()
+		if self.current_tok.type == TT_COMMA:
+			if self.current_tok.matches(TT_KEYWORD, 'change'):
+				res.register_advancement()
+				self.advance()
 
-			step_value = res.register(self.expr())
-			if res.error: return res
+				step_value = res.register(self.expr())
+				if res.error: return res
+			else:
+				return res.failure(RTError(
+					self.current_tok.pos_start, self.current_tok.pos_end,
+                    "Expected 'change' after comma"
+				))
 		else:
 			step_value = None
 
@@ -851,7 +936,7 @@ class Parser:
 			self.advance()
 
 			return res.success(WhileNode(condition, body, True))
-		
+
 		body = res.register(self.statement())
 		if res.error: return res
 
@@ -904,7 +989,7 @@ class Parser:
 			res.register_advancement()
 			self.advance()
 			return res.success(NumberNode(tok))
-		
+
 		elif tok.type == TT_STRING:
 			res.register_advancement()
 			self.advance()
@@ -2189,6 +2274,18 @@ class Interpreter:
 			return res.failure(error)
 		else:
 			return res.success(number.set_pos(node.pos_start, node.pos_end))
+
+	def visit_RaiseNode(self, node, context):
+		res = RTResult()
+		error = node.error
+		value = node.value
+
+		if error == "InvalidSyntaxError": return res.failure(InvalidSyntaxError(node.pos_start, node.pos_end, value if value else None, context))
+		if error == "ExpectedCharError": return res.failure(ExpectedCharError(node.pos_start, node.pos_end, value if value else None, context))
+		if error == "CheckConditionError": return res.failure(CheckConditionError(node.pos_start, node.pos_end, value if value else None, context))
+		if error == "RuntimeError": return res.failure(RTError(node.pos_start, node.pos_end, value if value else None, context))
+		if error == "InvalidOperationError": return res.failure(RTError(node.pos_start, node.pos_end, value if value else None, context))
+		else: return res.failure(RTError(node.pos_start, node.pos_end, value if value else None, context))
 
 	def visit_IfNode(self, node, context):
 		res = RTResult()
