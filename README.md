@@ -39,8 +39,8 @@ This will initialize the ***Nexus `CLI`***, which will be responsible for *runni
 $ Welcome to the Nexus Shell! Please, do: nexus <filename>
 ```
 
-> You can run the file without or with implementing the `.nxs` extension at the CLI (necessary in the file)
->> Remember to use `../` at the CLI if your file is outside of the `NexusLang` file.
+> You can run the file without or with implementing the `.nxs` extension at the CLI. (Extension is necessary in the file tho)
+>> Remember to use `../` at the CLI if your file is outside of the `NexusLang` folder.
 
 ```bash
 $ >> nexus main
