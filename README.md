@@ -45,11 +45,14 @@ write(5 + a) # 17
 ## Types (GEN1 - 1.0.0)
 > There are 4 main types for Nexus Lang (for now), which are: `list`, `int`, `str`, `function`.
 
+---
+
 ### STR
 ```
 "Hello, World!"
 ```
 String needs to be surrounded in double quote marks. They can store all ASCII Characters and all DIGITS (0-9).
+
 ---
 String related operations are:
 
@@ -65,7 +68,13 @@ Int (Integer) is a type which contains a number value, that respects python's si
 ```
 12
 ```
-They can contain any number within DIGITS (0-9)
+They can contain any number within DIGITS (0-9).
+
+Related operations follow basic math rules, they include: `sum (+)`, `sub (-)`, `div (/)`, `mult (*)`, `pow (^)`.
+
+---
+
+### LIST
 
 ### Built-In Functions on Types 
 
