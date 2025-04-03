@@ -3,3 +3,11 @@ def unpack using(lst)
 
     return get(lst, 0), get(lst, 1), get(lst, 2)
 end
+
+def map using(lst, func):
+    check islist(lst)
+    check isfunc(func)
+
+    range i = 0, to len(lst) do
+        func(get(lst, i))
+    end

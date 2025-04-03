@@ -116,6 +116,9 @@ TT_EOF = 'EOF'
 TT_COMMA = 'COMMA'
 TT_NEWLINE = 'NEWLINE'
 TT_ARROW = 'ARROW'
+TT_COLON = 'COLON'
+TT_RBRACE = 'RBRACE'
+TT_LBRACE = 'LBRACE'
 
 KEYWORDS = [
 	'nexus',
@@ -194,6 +197,12 @@ class Lexer:
 			elif self.current_char == '-':
 				tokens.append(Token(TT_MINUS, pos_start=self.pos))
 				self.advance()
+			elif self.current_char == '{':
+				tokens.append(Token(TT_LBRACE, pos_start=self.pos)); self.advance()
+			elif self.current_char == '}':
+				tokens.append(Token(TT_RBRACE, pos_start=self.pos)); self.advance()
+			elif self.current_char == ':':
+				tokens.append(Token(TT_COLON, pos_start=self.pos)); self.advance()
 			elif self.current_char == '"':
 				token, error = self.make_string()
 				if error: return [], error
@@ -227,7 +236,7 @@ class Lexer:
 				tokens.append(Token(TT_COMMA, pos_start=self.pos))
 				self.advance()
 			elif self.current_char == '=':
-				tokens.append(self.make_equals())                
+				tokens.append(self.make_equals())
 			elif self.current_char == '<':
 				tokens.append(self.make_less_than())
 			elif self.current_char == '>':
@@ -373,6 +382,12 @@ class StringNode:
 
 	def __repr__(self):
 		return f'{self.tok}'
+
+class DictNode:
+	def __init__(self, key_value_pairs, pos_start, pos_end):
+		self.key_value_pairs = key_value_pairs
+		self.pos_start = pos_start
+		self.pos_end = pos_end
 
 class ListNode:
 	def __init__(self, element_nodes, pos_start, pos_end):
@@ -1144,12 +1159,17 @@ class Parser:
 					"Expected ')'"
 				))
 		
+		elif tok.type == TT_LBRACE:
+			dict_expr = res.register(self.dict_expr())
+			if res.error: return res
+			return res.success(dict_expr)
+		
 		elif tok.type == TT_LSQUARE:
 			list_expr = res.register(self.list_expr())
 			if res.error: return res
 			return res.success(list_expr)
 
-		if self.current_tok.matches(TT_KEYWORD, 'import'):
+		if tok.matches(TT_KEYWORD, 'import'):
 			import_expr = res.register(self.import_expr())
 			if res.error: return res
 			return res.success(import_expr)
@@ -1206,6 +1226,71 @@ class Parser:
 	def arith_expr(self):
 		return self.bin_op(self.term, (TT_PLUS, TT_MINUS))
 
+	def dict_expr(self):
+		res = ParseResult()
+		key_value_pairs = []
+		pos_start = self.current_tok.pos_start.copy()
+		
+		if self.current_tok.type != TT_LBRACE:
+			return res.failure(InvalidSyntaxError(
+                pos_start, self.current_tok.pos_end,
+                f"Expected '{TT_LBRACE}'"
+            ))
+		
+		res.register_advancement()
+		self.advance()
+
+		if self.current_tok.type == TT_RBRACE:
+			res.register_advancement(); self.advance()
+			return res.success(DictNode([], pos_start, self.current_tok.pos_end.copy()))
+
+		while True:
+			if self.current_tok.type not in (TT_STRING, TT_IDENTIFIER):
+				return res.failure(InvalidSyntaxError(
+                    self.current_tok.pos_start, self.current_tok.pos_end,
+                    f"Expected string or identifier"
+                ))
+
+			key = self.current_tok
+			res.register_advancement()
+			self.advance()
+
+			if self.current_tok.type != TT_COLON:
+				return res.failure(InvalidSyntaxError(
+                    self.current_tok.pos_start, self.current_tok.pos_end,
+                    f"Expected ':' after dict key"
+                ))
+
+			res.register_advancement()
+			self.advance()
+
+			value = res.register(self.expr())
+			if res.error: return res
+
+			key_value_pairs.append((key, value))
+
+
+			if self.current_tok.type == TT_COMMA:
+				res.register_advancement(); self.advance()
+				continue
+			elif self.current_tok.type != TT_RBRACE:
+				return res.failure(InvalidSyntaxError(
+					self.current_tok.pos_start, self.current_tok.pos_end,
+                    "Expected ',' or '}'"
+				))
+			else:
+				break
+			
+		if self.current_tok.type != TT_RBRACE:
+			return res.failure(InvalidSyntaxError(
+				self.current_tok.pos_start, self.current_tok.pos_end,
+                "Expected '}'"
+			))
+		
+		res.register_advancement()
+		self.advance()
+
+		return res.success(DictNode(key_value_pairs, pos_start, self.current_tok.pos_end.copy()))
 	def list_expr(self):
 		res = ParseResult()
 		element_nodes = []
@@ -1799,6 +1884,56 @@ class List(Value):
 	def __str__(self):
 		return ", ".join([str(x) for x in self.elements])
 
+class Dict(Value):
+	def __init__(self, items):
+		super().__init__()
+		self.elements = items
+	
+	def added_to(self, other):
+		if isinstance(other, Dict):
+			new_dict = self.copy()
+			new_dict.elements.update(other.elements)
+			return new_dict, None
+		return None, self.illegal_operation(other)
+	
+	def subbed_by(self, other):
+		if isinstance(other, String):
+			key = other.value
+			if key in self.elements:
+				new_dict = self.copy()
+				del new_dict.elements[key]
+				return new_dict, None
+			return None, RTError(
+				other.pos_start, other.pos_end,
+                f"Key '{key}' not found in dictionary",
+                self.context
+			)
+		return None, self.illegal_operation(other)
+	
+	def copy(self):
+		copy = Dict(self.elements.copy())
+		copy.set_pos(self.pos_start, self.pos_end)
+		copy.set_context(self.context)
+		return copy
+	
+	def __repr__(self):
+		pairs = []
+		for key, value in self.elements.items():
+			if isinstance(value, String):
+				pairs.append(f"'{key}': '{value}'")
+			else:
+				pairs.append(f"'{key}': {str(value)}")
+		return '{' + ', '.join(pairs) + '}'
+	
+	def __str__(self):
+		pairs = []
+		for key, value in self.elements.items():
+			if isinstance(value, String):
+				pairs.append(f"'{key}': '{value}'")
+			else:
+				pairs.append(f"'{key}': {str(value)}")
+		return ', '.join(pairs)
+
 class BaseFunction(Value):
 	def __init__(self, name):
 		super().__init__()
@@ -1950,15 +2085,20 @@ class BuiltInFunction(BaseFunction):
 		is_function = isinstance(exec_ctx.symbol_table.get("value"), BaseFunction)
 		return RTResult().success(Number.true if is_function else Number.false)
 	execute_is_function.arg_names = ["value"]
+
+	def execute_is_dict(self, exec_ctx):
+		is_dict = isinstance(exec_ctx.symbol_table.get("value"), Dict)
+		return RTResult().success(Number.true if is_dict else Number.false)
+	execute_is_dict.arg_names = ["value"]
 	
 	def execute_get(self, exec_ctx):
 		list_ = exec_ctx.symbol_table.get("list")
 		index = exec_ctx.symbol_table.get("index")
 
-		if not isinstance(list_, List):
+		if not isinstance(list_, List) and not isinstance(list_, Dict):
 			return RTResult().failure(RTError(
 				self.pos_start, self.pos_end,
-				"First argument must be a list",
+				"First argument must be a list or dict",
 				exec_ctx
 			))
 		
@@ -1970,27 +2110,56 @@ class BuiltInFunction(BaseFunction):
 			))
 		
 		try:
-			return RTResult().success(list_.elements[int(index.value)])
+			return RTResult().success(list_.elements[int(index.value)] if isinstance(list_, List) else  list_.elements[index.value])
 		except:
 			return RTResult().failure(RTError(
 				self.pos_start, self.pos_end,
-				"Index out of bounds",
+				"Index out of bounds | Key does not exist",
 				exec_ctx
 			))
 	execute_get.arg_names = ["list", "index"]
+
+	def execute_set(self, exec_ctx):
+		dict_ = exec_ctx.symbol_table.get("dict")
+		key = exec_ctx.symbol_table.get("key")
+		value = exec_ctx.symbol_table.get("value")
+
+		if not isinstance(dict_, Dict):
+			return RTResult().failure(RTError(
+                self.pos_start, self.pos_end,
+                "First argument must be a dictionary",
+                exec_ctx
+            ))
+		
+		if not isinstance(key, String):
+			return RTResult().failure(RTError(
+                self.pos_start, self.pos_end,
+                "Second argument must be a string",
+                exec_ctx
+            ))
+		
+		try:
+			dict_.elements[key] = value
+			return RTResult().success(dict_)
+		except Exception as e:
+			return RTResult().failure(RTError(
+				self.pos_start, self.pos_end,
+                f"Error setting key '{key}': {str(e)}",
+                exec_ctx
+			))
 
 	def execute_del(self, exec_ctx):
 		list_ = exec_ctx.symbol_table.get("list")
 		index = exec_ctx.symbol_table.get("index")
 
-		if not isinstance(list_, List):
+		if not isinstance(list_, List) and not isinstance(list_, Dict):
 			return RTResult().failure(RTError(
 				self.pos_start, self.pos_end,
-				"First argument must be a list",
+				"First argument must be a list or a dict",
 				exec_ctx
 			))
 		
-		if not isinstance(index, Number):
+		if not isinstance(index, Number) and not isinstance(index, String):
 			return RTResult().failure(RTError(
 				self.pos_start, self.pos_end,
 				"Second argument must be a number",
@@ -1998,7 +2167,8 @@ class BuiltInFunction(BaseFunction):
 			))
 		
 		try:
-			list_.elements.pop(index.value)
+			if isinstance(list_, List): list_.elements.pop(index.value);
+			else: del (list_.elements[index if isinstance(index, String) else None])
 			return RTResult().success(list_)
 		except:
 			return RTResult().failure(RTError(
@@ -2160,10 +2330,12 @@ class BuiltInFunction(BaseFunction):
 			return RTResult().success(String("[{}...]".format(", ".join(str(e) for e in value.elements[:10]))))
 		elif isinstance(value, Function):
 			return RTResult().success(String(f"<function {value.name}>"))
+		elif isinstance(value, Dict):
+			return RTResult().success(String(f"{len(value.__str__)}"))
 		else:
 			return RTResult().failure(RTError(
 				self.pos_start, self.pos_end,
-				"Argument must be a number, string, list, or function",
+				"Argument must be a number, string, list, function or dict",
 				exec_ctx
 			))
 	execute_str.arg_names = ['value']
@@ -2207,6 +2379,8 @@ class BuiltInFunction(BaseFunction):
 			return RTResult().success(String('list'))
 		elif isinstance(value, Function):
 			return RTResult().success(String('function'))
+		elif isinstance(value, Dict):
+			return RTResult().success(String('dict'))
 		else:
 			return RTResult().failure(RTError(
 				self.pos_start, self.pos_end,
@@ -2226,6 +2400,39 @@ class BuiltInFunction(BaseFunction):
 			))
 		return RTResult().success(String(separator.value.join([str(x) for x in value.elements])))
 	execute_join.arg_names = ["separator", "value"]
+
+	def execute_keys(self, exec_ctx):
+		value = exec_ctx.symbol_table.get("value")
+		if not isinstance(value, Dict):
+			return RTResult().failure(RTError(
+                self.pos_start, self.pos_end,
+                "Argument must be a dict",
+                exec_ctx
+            ))
+		return RTResult().success(List([String(k) for k in value.elements.keys()]))
+	execute_keys.arg_names = ["value"]
+
+	def execute_values(self, exec_ctx):
+		value = exec_ctx.symbol_table.get("value")
+		if not isinstance(value, Dict):
+			return RTResult().failure(RTError(
+				self.pos_start, self.pos_end,
+                "Argument must be a dict",
+                exec_ctx
+			))
+		return RTResult().success(List([String(v) for v in value.elements.values()]))
+	execute_values.arg_names = ["value"]
+
+	def execute_items(self, exec_ctx):
+		value = exec_ctx.symbol_table.get("value")
+		if not isinstance(value, Dict):
+			return RTResult().failure(RTError(
+                self.pos_start, self.pos_end,
+                "Argument must be a dict",
+                exec_ctx
+            ))
+		return RTResult().success(List([(String(k), v) for k, v in value.elements.items()]))
+	execute_items.arg_names = ["value"]
 
 BuiltInFunction.write = BuiltInFunction("write")
 BuiltInFunction.write_ret = BuiltInFunction("write_ret")
@@ -2249,6 +2456,9 @@ BuiltInFunction.str = BuiltInFunction("str")
 BuiltInFunction.int = BuiltInFunction("int")
 BuiltInFunction.join = BuiltInFunction("join")
 BuiltInFunction.type = BuiltInFunction("type")
+BuiltInFunction.keys = BuiltInFunction("keys")
+BuiltInFunction.values = BuiltInFunction("values")
+BuiltInFunction.items = BuiltInFunction("items")
 
 class Context:
 	def __init__(self, display_name, parent=None, parent_entry_pos=None):
@@ -2296,7 +2506,9 @@ class Interpreter:
 		func_name = node.func_name_tok
 		file_name = node.file_name_tok.value
 
+		if file_name == "stdlibs": file_name == "../NexusLang/stdlibs.nxs"
 		if not file_name.endswith('.nxs'): file_name += '.nxs'
+		if not file_name.startswith('../'): file_name = f'../{file_name}'
 
 		try:
 			with open(file_name, 'r') as f:
@@ -2334,6 +2546,20 @@ class Interpreter:
 		
 		return res.success(
 			List(elements).set_context(context).set_pos(node.pos_start, node.pos_end))
+	
+	def visit_DictNode(self, node, context):
+		res = RTResult()
+		elements = {}
+
+		for key_tok, value_node in node.key_value_pairs:
+			value = res.register(self.visit(value_node, context))
+			if res.error: return res
+
+			elements[key_tok.value] = value
+		
+		return res.success(
+            Dict(elements).set_context(context).set_pos(node.pos_start, node.pos_end)
+		)
 
 	def visit_VarAccessNode(self, node, context):
 		res = RTResult()
@@ -2623,6 +2849,10 @@ global_symbol_table.set("int", BuiltInFunction.int)
 global_symbol_table.set("str", BuiltInFunction.str)
 global_symbol_table.set("join", BuiltInFunction.join)
 global_symbol_table.set("type", BuiltInFunction.type)
+global_symbol_table.set("keys", BuiltInFunction.keys)
+global_symbol_table.set("values", BuiltInFunction.values)
+global_symbol_table.set("items", BuiltInFunction.items)
+global_symbol_table.set("isdict", BuiltInFunction("is_dict"))
 
 def run(fn, text=None, file=None, context=None):
 	# Generate tokens

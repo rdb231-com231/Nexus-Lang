@@ -16,6 +16,7 @@ Install the content present in this repo:
 REQUIRED FILES/DIRECTORIES:
 - `Interpreter` [Directory]
 - `nexus_cli.py` [file]
+- `stdlibs.nxs` [file] <== **RECOMMENDED**
 
 The Documentation and README.md are optional.
 Unzip if necessary and place the Nexus-Lang on folder that you will run all of your's nexus code.
