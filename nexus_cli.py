@@ -13,7 +13,7 @@ class NexusShell(cmd.Cmd):
         """
         if filename:
             try:
-                _, err = interpreter.run(filename, file=filename)
+                _, err, ctx = interpreter.run(filename, file=filename)
                 if err:
                     print(str(err))
             except Exception as e:

@@ -1,13 +1,13 @@
-def unpack using(lst)
-    check len(lst) >= 3 as "List must have 3 elements max. You can run: [[1, 2], [3, 4], [5, 6]]"
-
-    return get(lst, 0), get(lst, 1), get(lst, 2)
-end
-
-def map using(lst, func):
+def map using(lst, func)
     check islist(lst)
     check isfunc(func)
 
+    nexus new_list = []
+
     range i = 0, to len(lst) do
-        func(get(lst, i))
+        nexus item = func(get(lst, i))
+        append(new_list, item)
     end
+
+    return new_list
+end

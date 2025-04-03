@@ -2340,6 +2340,10 @@ class BuiltInFunction(BaseFunction):
 			))
 	execute_str.arg_names = ['value']
 
+	def execute_list(self, exec_ctx):
+		elements = exec_ctx.symbol_table.get("elements")
+		return RTResult().success(List(str(elements).split()))
+
 	def execute_int(self, exec_ctx):
 		value = exec_ctx.symbol_table.get("value")
 		if isinstance(value, Number):
@@ -2503,38 +2507,49 @@ class Interpreter:
 	
 	def visit_ImportNode(self, node, context):
 		res = RTResult()
-		func_name = node.func_name_tok
-		file_name = node.file_name_tok.value
-
-		if file_name == "stdlibs": file_name == "../NexusLang/stdlibs.nxs"
-		if not file_name.endswith('.nxs'): file_name += '.nxs'
-		if not file_name.startswith('../'): file_name = f'../{file_name}'
+		filename = node.file_name_tok.value
+		
+		if filename == "stdlibs": filename = f"../NexusLang/stdlibs.nxs"
+		else:
+			if not str(filename).endsWith('.nxs'): filename += '.nxs'
+			if not str(filename).startsWith('../'): filename = f"../{filename}"
 
 		try:
-			with open(file_name, 'r') as f:
+			# Read module file
+			with open(filename, "r") as f:
 				script = f.read()
 		except Exception as e:
 			return res.failure(RTError(
 				node.pos_start, node.pos_end,
-                f"Error reading file '{file_name}': {str(e)}",
-                context
+				f"Could not load module '{node.file_name_tok.value}': {str(e)}",
+				context
 			))
-
-		new_context = Context(f"<imported from {file_name}>", parent=context)
-		new_context.symbol_table = SymbolTable(global_symbol_table)
-
-		_, error = run(file_name, script, file_name, context=new_context)
+		
+		# Create isolated module context
+		module_context = Context(f"<module {node.file_name_tok.value}>")
+		module_context.symbol_table = SymbolTable(global_symbol_table)
+		
+		# Run module in its isolated context
+		_, error, ctx = run(filename, file=filename, context=module_context)
 		if error: return res.failure(error)
-
-		for func in func_name:
-			func_value = new_context.symbol_table.get(func.value)
-			if not func_value: return res.failure(RTError(
+		module_context = ctx
+		ctx.symbol_table.parent = global_symbol_table
+		# Import specified functions
+		for func_tok in node.func_name_tok:
+			func_value = module_context.symbol_table.get(func_tok.value)
+			if not func_value:
+				return res.failure(RTError(
 					node.pos_start, node.pos_end,
-					f"'{func.value}' is not defined in imported script",
+					f"Function '{func_tok.value}' not exported by module",
 					context
 				))
-			context.symbol_table.set(func.value, func_value)
-		return res.success(func_value)
+			
+			# Create copy with current context
+			func_copy = func_value.copy()
+			func_copy.set_context(context)
+			context.symbol_table.set(func_tok.value, func_copy)
+		
+		return res.success(Number.null)
 
 	def visit_ListNode(self, node, context):
 		res = RTResult()
@@ -2879,4 +2894,4 @@ def run(fn, text=None, file=None, context=None):
 	context.symbol_table = global_symbol_table
 	result = interpreter.visit(ast.node, context)
 
-	return result.value, result.error
+	return result.value, result.error, context

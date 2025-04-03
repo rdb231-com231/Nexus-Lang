@@ -1,0 +1,12 @@
+import map from "stdlibs"
+
+nexus ml = [1, 2, 3]
+
+def add_one using(x)
+    check isint(x)
+
+    return x + 1
+end
+
+nexus m2 = map(ml, isint)
+write(m2)
