@@ -7,7 +7,7 @@ def start():
 	while True:
 			print("Hello! This is the Nexus Shell for one-line code, if you want to run a file directly into the shell, use run(\"filename.nxs\")")
 			text = input('Nexus > ')
-			if text.strip() == "": continue	
+			if text.strip() == "": continue
 			if text == 'close':
 				print('\033c', end='')
 				break

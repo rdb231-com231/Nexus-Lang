@@ -51,8 +51,8 @@ class RTError(Error):
 
 	def as_string(self):
 		result = self.generate_traceback()
-		result += f'{self.error_name}: {self.details}'
-		result += '\n\n' + strings_with_arrows(self.pos_start.ftxt, self.pos_start, self.pos_end)
+		result += f'{self.error_name}: {self.details}\n'
+		result += '\n\n' + strings_with_arrows.string_with_arrows(self.pos_start.ftxt, self.pos_start, self.pos_end)
 		return result
 
 	def generate_traceback(self):
@@ -138,7 +138,9 @@ KEYWORDS = [
 	'break',
 	'check',
 	'raise',
-	'as'
+	'as',
+	'import',
+	'from'
 ]
 
 class Token:
@@ -177,6 +179,8 @@ class Lexer:
 		while self.current_char is not None:
 			if self.current_char in ' \t':
 				self.advance()
+			elif self.current_char == '#':
+				self.skip_comment()
 			elif self.current_char in DIGITS:
 				tokens.append(self.make_number())
 			elif self.current_char in ';\n':
@@ -223,7 +227,7 @@ class Lexer:
 				tokens.append(Token(TT_COMMA, pos_start=self.pos))
 				self.advance()
 			elif self.current_char == '=':
-				tokens.append(self.make_equals())				
+				tokens.append(self.make_equals())                
 			elif self.current_char == '<':
 				tokens.append(self.make_less_than())
 			elif self.current_char == '>':
@@ -236,6 +240,14 @@ class Lexer:
 
 		tokens.append(Token(TT_EOF, pos_start=self.pos))
 		return tokens, None
+	
+	def skip_comment(self):
+		self.advance()
+
+		while self.current_char != '\n' and self.current_char is not None:
+			self.advance()
+
+		self.advance()
 
 	def make_number(self):
 		num_str = ''
@@ -305,6 +317,7 @@ class Lexer:
 			self.advance()
 			return Token(TT_NE, pos_start=pos_start, pos_end=self.pos), None
 
+		self.advance()
 		return None, ExpectedCharError(pos_start, self.pos, "'=' (after '!')")
 	
 	def make_equals(self):
@@ -317,7 +330,7 @@ class Lexer:
 			tok_type = TT_EE
 		elif self.current_char == ">":
 			self.advance()
-			tok_type == TT_ARROW
+			tok_type = TT_ARROW
 
 		return Token(tok_type, pos_start=pos_start, pos_end=self.pos)
 
@@ -367,10 +380,19 @@ class ListNode:
 		self.pos_start = pos_start
 		self.pos_end = pos_end
 
+class ImportNode:
+	def __init__(self, func_name_tok, file_name_tok, pos_start, pos_end):
+		self.func_name_tok = func_name_tok
+		self.file_name_tok = file_name_tok
+		self.pos_start = pos_start
+		self.pos_end = pos_end
+
 class RaiseNode:
 	def __init__(self, error, value, pos_start, pos_end):
-		self.error = error; self.value = value
-		self.pos_start = pos_start; self.pos_end = pos_end
+		self.error = error
+		self.value = value
+		self.pos_start = pos_start
+		self.pos_end = pos_end
 
 class VarAccessNode:
 	def __init__(self, var_name_tok):
@@ -390,7 +412,7 @@ class VarAssignNode:
 		else:
 			self.pos_start = self.var_name_tok.pos_start
 			
-		self.pos_end = self.value_node.pos_end
+		self.pos_end = self.var_name3_tok.pos_end if var_name3_tok else var_name_tok.pos_end
 
 class BinOpNode:
 	def __init__(self, left_node, op_tok, right_node):
@@ -418,11 +440,12 @@ class IfNode:
 		self.cases = cases
 		self.else_case = else_case
 		self.pos_start = self.cases[0][0].pos_start
-		self.pos_end = (self.else_case or self.cases[len(self.cases) - 1])[0].pos_end
+		self.pos_end = (self.else_case or self.cases[len(self.cases) - 1][0]).pos_end
 
 class CheckNode:
-	def __init__(self, case, pos_start, pos_end):
-		self.condition = case
+	def __init__(self, condition, pos_start, pos_end, error=None):
+		self.error = error
+		self.condition = condition
 		self.pos_start = pos_start
 		self.pos_end = pos_end
 
@@ -473,8 +496,8 @@ class CallNode:
 			self.pos_end = self.node_to_call.pos_end
 
 class ReturnNode:
-	def __init__(self, node_to_return, pos_start, pos_end):
-		self.node_to_return = node_to_return
+	def __init__(self, nodes_to_return, pos_start, pos_end):
+		self.nodes_to_return = nodes_to_return
 		self.pos_start = pos_start
 		self.pos_end = pos_end
 
@@ -595,10 +618,27 @@ class Parser:
 		if self.current_tok.matches(TT_KEYWORD, 'return'):
 			res.register_advancement()
 			self.advance()
-			expr = res.try_register(self.expr())
-			if not expr:
-				self.reverse(res.to_reverse_count)
-			return res.success(ReturnNode(expr, pos_start, self.current_tok.pos_start.copy()))
+			
+			# Handle multiple returns
+			return_nodes = []
+			if self.current_tok.type not in (TT_NEWLINE, TT_EOF):
+				first_expr = res.register(self.expr())
+				if res.error: return res
+				return_nodes.append(first_expr)
+
+				while self.current_tok.type == TT_COMMA:
+					res.register_advancement()
+					self.advance()
+
+					expr = res.register(self.expr())
+					if res.error: return res
+					return_nodes.append(expr)
+
+			return res.success(ReturnNode(
+				return_nodes if return_nodes else None,
+				pos_start,
+				self.current_tok.pos_start.copy()
+			))
 
 		if self.current_tok.matches(TT_KEYWORD, 'continue'):
 			res.register_advancement()
@@ -622,6 +662,61 @@ class Parser:
 		))
 		return res.success(expr)
 
+	def import_expr(self):
+		res = ParseResult()
+		
+		if not self.current_tok.matches(TT_KEYWORD, 'import'):
+			return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                "Expected 'import'"
+            ))
+
+		pos_start = self.current_tok.pos_start.copy()
+		self.advance()
+		res.register_advancement()
+		module_name = self.current_tok.value
+
+		if self.current_tok.type != TT_IDENTIFIER:
+			return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                "Expected identifier after 'import'"
+            ))
+		
+		func_name_tok = []
+		func_name_tok.append(self.current_tok)
+		res.register_advancement()
+		self.advance()
+
+		while self.current_tok.type == TT_COMMA:
+			res.register_advancement(); self.advance()
+			if self.current_tok.type != TT_IDENTIFIER:
+				return res.failure(InvalidSyntaxError(self.current_tok.pos_start.copy(), self.current_tok.pos_end.copy(),
+                "Expected identifier after ','"
+                ))
+			func_name_tok.append(self.current_tok)
+			res.register_advancement(); self.advance()
+
+
+		if not self.current_tok.matches(TT_KEYWORD, 'from'):
+			return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                "Expected 'from'"
+            ))
+
+		res.register_advancement()
+		self.advance()
+
+		if self.current_tok.type != TT_STRING:
+			return res.failure(InvalidSyntaxError(self.current_tok.pos_start.copy(), self.current_tok.pos_end.copy(),
+			"Expected file name as String"
+			))
+		
+		file_name_tok = self.current_tok
+		res.register_advancement()
+		self.advance()
+
+		return res.success(ImportNode(func_name_tok, file_name_tok, pos_start, self.current_tok.pos_end.copy()))
+
 	def if_expr(self):
 		res = ParseResult()
 		all_cases = res.register(self.if_expr_cases('if'))
@@ -634,9 +729,9 @@ class Parser:
 		pos_start = self.current_tok.pos_start.copy()
 		if not self.current_tok.matches(TT_KEYWORD, 'raise'):
 			return res.failure(InvalidSyntaxError(
-                self.current_tok.pos_start, self.current_tok.pos_end,
-                "Expected 'raise'"
-            ))
+				self.current_tok.pos_start, self.current_tok.pos_end,
+				"Expected 'raise'"
+			))
 
 		res.register_advancement()
 		self.advance()
@@ -653,26 +748,26 @@ class Parser:
 			to_raise = "RuntimeError"
 		else:
 			return res.failure(InvalidSyntaxError(
-                self.current_tok.pos_start, self.current_tok.pos_end,
-                f"Invalid raise type '{self.current_tok.value}'"
-            ))
+				self.current_tok.pos_start, self.current_tok.pos_end,
+				f"Invalid raise type '{self.current_tok.value}'"
+			))
 
 		res.register_advancement()
 		self.advance()
 
 		if not self.current_tok.matches(TT_KEYWORD, 'as'):
 			return res.failure(InvalidSyntaxError(
-                self.current_tok.pos_start, self.current_tok.pos_end,
-                "Expected 'as'"
-            ))
+				self.current_tok.pos_start, self.current_tok.pos_end,
+				"Expected 'as'"
+			))
 		res.register_advancement()
 		self.advance()
 
 		if not self.current_tok.type == TT_STRING:
 			return res.failure(InvalidSyntaxError(
-                self.current_tok.pos_start, self.current_tok.pos_end,
-                "Expected string literal"
-            ))
+				self.current_tok.pos_start, self.current_tok.pos_end,
+				"Expected string literal"
+			))
 
 		value = self.current_tok.value
 		res.register_advancement()
@@ -681,18 +776,46 @@ class Parser:
 
 	def check_expr(self):
 		res = ParseResult()
-		if self.current_tok.matches(TT_KEYWORD, 'check'):
-			pos_start = self.current_tok.pos_start.copy()
+		pos_start = self.current_tok.pos_start.copy()
+		
+		if not self.current_tok.matches(TT_KEYWORD, 'check'):
+			return res.failure(InvalidSyntaxError(
+				pos_start, self.current_tok.pos_end,
+				"Expected 'check'"
+			))
+		
+		res.register_advancement()
+		self.advance()
+		
+		condition = res.register(self.expr())
+		if res.error: return res
+		
+		if self.current_tok.matches(TT_KEYWORD, 'as'):
 			res.register_advancement()
 			self.advance()
-			condition = res.register(self.expr())
-			if res.error: return res
-			return res.success(CheckNode(condition, pos_start, self.current_tok.pos_end.copy()))
+			
+			if self.current_tok.type != TT_STRING:
+				return res.failure(InvalidSyntaxError(
+					self.current_tok.pos_start, self.current_tok.pos_end,
+					"Expected string after 'as'"
+				))
+			
+			error_msg = self.current_tok.value
+			res.register_advancement()
+			self.advance()
+			
+			return res.success(CheckNode(
+				condition,
+				pos_start,
+				self.current_tok.pos_end.copy(),
+				error_msg
+			))
 		else:
-			return res.failure(InvalidSyntaxError(
-                self.current_tok.pos_start, self.current_tok.pos_end,
-                "Expected 'check'"
-            ))
+			return res.success(CheckNode(
+				condition,
+				pos_start,
+				self.current_tok.pos_end.copy()
+			))
 
 	def if_expr_b(self):
 		return self.if_expr_cases('elif')
@@ -833,8 +956,11 @@ class Parser:
 		if not self.current_tok.type == TT_COMMA:
 			return res.failure(InvalidSyntaxError(
 				self.current_tok.pos_start, self.current_tok.pos_end,
-                f"Expected ','"
+				f"Expected ','"
 			))
+
+		res.register_advancement()
+		self.advance()
 
 		if not self.current_tok.matches(TT_KEYWORD, 'to'):
 			return res.failure(InvalidSyntaxError(
@@ -849,17 +975,20 @@ class Parser:
 		if res.error: return res
 
 		if self.current_tok.type == TT_COMMA:
-			if self.current_tok.matches(TT_KEYWORD, 'change'):
-				res.register_advancement()
-				self.advance()
-
-				step_value = res.register(self.expr())
-				if res.error: return res
-			else:
-				return res.failure(RTError(
+			res.register_advancement()
+			self.advance()
+			
+			if not self.current_tok.matches(TT_KEYWORD, 'change'):
+				return res.failure(InvalidSyntaxError(
 					self.current_tok.pos_start, self.current_tok.pos_end,
-                    "Expected 'change' after comma"
+					"Expected 'change' after comma"
 				))
+			
+			res.register_advancement()
+			self.advance()
+
+			step_value = res.register(self.expr())
+			if res.error: return res
 		else:
 			step_value = None
 
@@ -1020,6 +1149,11 @@ class Parser:
 			if res.error: return res
 			return res.success(list_expr)
 
+		if self.current_tok.matches(TT_KEYWORD, 'import'):
+			import_expr = res.register(self.import_expr())
+			if res.error: return res
+			return res.success(import_expr)
+
 		elif tok.matches(TT_KEYWORD, 'if'):
 			if_expr = res.register(self.if_expr())
 			if res.error: return res
@@ -1163,9 +1297,9 @@ class Parser:
 			if self.current_tok.type == TT_NEWLINE:
 				res.register_advancement()
 				self.advance()
-				return res.success(VarAssignNode(var_name, value_node=None))
+				return res.success(VarAssignNode(var_name, None))
 
-			if self.current_tok.type == TT_COMMA:
+			elif self.current_tok.type == TT_COMMA:
 				res.register_advancement()
 				self.advance()
 				if self.current_tok.type != TT_IDENTIFIER:
@@ -1201,11 +1335,11 @@ class Parser:
 			self.advance()
 			expr = res.register(self.expr())
 			if res.error: return res
+			
 			if v1:
 				if v2: return res.success(VarAssignNode(var_name, expr, var_name2, var_name3))
 				return res.success(VarAssignNode(var_name, expr, var_name2))
 			return res.success(VarAssignNode(var_name, expr))
-
 
 		node = res.register(self.bin_op(self.comp_expr, ((TT_KEYWORD, 'and'), (TT_KEYWORD, 'or'))))
 
@@ -1219,7 +1353,7 @@ class Parser:
 	
 	def func_def(self):
 		res = ParseResult()
-
+		
 		if not self.current_tok.matches(TT_KEYWORD, 'def'):
 			return res.failure(InvalidSyntaxError(
 				self.current_tok.pos_start, self.current_tok.pos_end,
@@ -1235,106 +1369,82 @@ class Parser:
 				f"Expected function name"
 			))
 
-		var_name_tok = self.current_tok
+		func_name_tok = self.current_tok
 		res.register_advancement()
 		self.advance()
 
-		if not self.current_tok.matches(TT_KEYWORD, 'using'):
-			return res.failure(InvalidSyntaxError(
-				self.current_tok.pos_start, self.current_tok.pos_end,
-				f"Expected 'using'"
-			))
-
-		res.register_advancement()
-		self.advance()
-
-		if self.current_tok.type != TT_LPAREN:
-			return res.failure(InvalidSyntaxError(
-				self.current_tok.pos_start, self.current_tok.pos_end,
-				f"Expected '('"
-			))
-
-		res.register_advancement()
-		self.advance()
-
-		arg_name_toks = []
-
-		if self.current_tok.type == TT_IDENTIFIER:
-			arg_name_toks.append(self.current_tok)
+		if self.current_tok.matches(TT_KEYWORD, 'using'):
 			res.register_advancement()
 			self.advance()
-
-			while self.current_tok.type == TT_COMMA:
-				res.register_advancement()
-				self.advance()
-
-				if self.current_tok.type != TT_IDENTIFIER:
-					return res.failure(InvalidSyntaxError(
-						self.current_tok.pos_start, self.current_tok.pos_end,
-						f"Expected identifier after comma"
-					))
-
+			
+			if self.current_tok.type != TT_LPAREN:
+				return res.failure(InvalidSyntaxError(
+					self.current_tok.pos_start, self.current_tok.pos_end,
+					f"Expected '(' after 'using'"
+				))
+			
+			res.register_advancement()
+			self.advance()
+			
+			arg_name_toks = []
+			
+			if self.current_tok.type == TT_IDENTIFIER:
 				arg_name_toks.append(self.current_tok)
 				res.register_advancement()
 				self.advance()
-
-			if self.current_tok.type != TT_RPAREN:
-				return res.failure(InvalidSyntaxError(
-					self.current_tok.pos_start, self.current_tok.pos_end,
-					f"Expected ',' or ')'"
-				))
-
+				
+				while self.current_tok.type == TT_COMMA:
+					res.register_advancement()
+					self.advance()
+					
+					if self.current_tok.type != TT_IDENTIFIER:
+						return res.failure(InvalidSyntaxError(
+							self.current_tok.pos_start, self.current_tok.pos_end,
+							f"Expected identifier after comma"
+						))
+					
+					arg_name_toks.append(self.current_tok)
+					res.register_advancement()
+					self.advance()
+				
+				if self.current_tok.type != TT_RPAREN:
+					return res.failure(InvalidSyntaxError(
+						self.current_tok.pos_start, self.current_tok.pos_end,
+						f"Expected ')' after arguments"
+					))
+				
+				res.register_advancement()
+				self.advance()
 		else:
-			if self.current_tok.type != TT_RPAREN:
-				return res.failure(InvalidSyntaxError(
-					self.current_tok.pos_start, self.current_tok.pos_end,
-					f"Expected identifier or ')'"
-				))
+			arg_name_toks = []
 
-		res.register_advancement()
-		self.advance()
-
-		if self.current_tok.type == TT_ARROW:
+		if self.current_tok.type == TT_NEWLINE:
 			res.register_advancement()
 			self.advance()
-
-			body = res.register(self.expr())
+			
+			body = res.register(self.statements())
 			if res.error: return res
-
+			
+			if not self.current_tok.matches(TT_KEYWORD, 'end'):
+				return res.failure(InvalidSyntaxError(
+					self.current_tok.pos_start, self.current_tok.pos_end,
+					f"Expected 'end'"
+				))
+			
+			res.register_advancement()
+			self.advance()
+			
 			return res.success(FuncDefNode(
-				var_name_tok,
+				func_name_tok,
 				arg_name_toks,
 				body,
-				True
+				False
 			))
-		
-		if self.current_tok.type != TT_NEWLINE:
+		else:
 			return res.failure(InvalidSyntaxError(
 				self.current_tok.pos_start, self.current_tok.pos_end,
-				f"Expected '=>' or NEWLINE"
+				f"Expected newline or '=>'"
 			))
-
-		res.register_advancement()
-		self.advance()
-
-		body = res.register(self.statements())
-		if res.error: return res
-
-		if not self.current_tok.matches(TT_KEYWORD, 'end'):
-			return res.failure(InvalidSyntaxError(
-				self.current_tok.pos_start, self.current_tok.pos_end,
-				f"Expected 'end'"
-			))
-
-		res.register_advancement()
-		self.advance()
-
-		return res.success(FuncDefNode(
-			var_name_tok,
-			arg_name_toks,
-			body,
-			False
-		))
 
 	def bin_op(self, func_a, ops, func_b=None):
 		if func_b is None:
@@ -1366,7 +1476,7 @@ class RTResult:
 		self.loop_should_break = False
 
 	def register(self, res):
-		self.error = res.error
+		if res.error: self.error = res.error
 		self.func_return_value = res.func_return_value
 		self.loop_should_continue = res.loop_should_continue
 		self.loop_should_break = res.loop_should_break
@@ -1603,6 +1713,7 @@ class String(Value):
 			return String(self.value * other.value).set_context(self.context), None
 		else:
 			return None, Value.illegal_operation(self, other)
+
 	def get_comparison_eq(self, other):
 		if isinstance(other, String):
 			return Number(int(self.value == other.value)).set_context(self.context), None
@@ -1610,7 +1721,7 @@ class String(Value):
 			return None, Value.illegal_operation(self, other)
 
 	def get_comparison_ne(self, other):
-		if isinstance(other, Number):
+		if isinstance(other, String):
 			return Number(int(self.value != other.value)).set_context(self.context), None
 		else:
 			return None, Value.illegal_operation(self, other)
@@ -1749,8 +1860,8 @@ class Function(BaseFunction):
 		value = res.register(interpreter.visit(self.body_node, exec_ctx))
 		if res.should_return() and res.func_return_value is None: return res
 
-		ret_value = (value if self.should_auto_return else None) or res.func_return_value or Number.null
-		return res.success(ret_value)
+		# Return the value directly (could be a List for multiple returns)
+		return res.success(res.func_return_value)
 
 	def copy(self):
 		copy = Function(self.name, self.body_node, self.arg_names, self.should_auto_return)
@@ -1888,7 +1999,7 @@ class BuiltInFunction(BaseFunction):
 		
 		try:
 			list_.elements.pop(index.value)
-			return RTResult().success(list_.elements)
+			return RTResult().success(list_)
 		except:
 			return RTResult().failure(RTError(
 				self.pos_start, self.pos_end,
@@ -2012,31 +2123,31 @@ class BuiltInFunction(BaseFunction):
 		new_value = exec_ctx.symbol_table.get("new_value")
 		if not isinstance(list_, List):
 			return RTResult().failure(RTError(
-                self.pos_start, self.pos_end,
-                "First argument must be a list",
-                exec_ctx
-            ))
+				self.pos_start, self.pos_end,
+				"First argument must be a list",
+				exec_ctx
+			))
 		if not isinstance(index, Number) or not isinstance(new_value, (String, Number, List)):
 			return RTResult().failure(RTError(
-                self.pos_start, self.pos_end,
-                "Index must be a integer and new value must be a number, string or list",
-                exec_ctx
-            ))
+				self.pos_start, self.pos_end,
+				"Index must be a integer and new value must be a number, string or list",
+				exec_ctx
+			))
 		try:
-			list_.elements[index] = new_value
+			list_.elements[index.value] = new_value
 			return RTResult().success(list_)
 		except IndexError:
 			return RTResult().failure(RTError(
-                self.pos_start, self.pos_end,
-                "Index out of bounds",
-                exec_ctx
-            ))
+				self.pos_start, self.pos_end,
+				"Index out of bounds",
+				exec_ctx
+			))
 		except Exception as e:
 			return RTResult().failure(RTError(
-                self.pos_start, self.pos_end,
-                f"Failed to replace element at index {index}\n" + str(e),
-                exec_ctx
-            ))
+				self.pos_start, self.pos_end,
+				f"Failed to replace element at index {index.value}\n" + str(e),
+				exec_ctx
+			))
 	execute_replace.arg_names = ["list", "index", "new_value"]
 
 	def execute_str(self, exec_ctx):
@@ -2051,10 +2162,10 @@ class BuiltInFunction(BaseFunction):
 			return RTResult().success(String(f"<function {value.name}>"))
 		else:
 			return RTResult().failure(RTError(
-                self.pos_start, self.pos_end,
-                "Argument must be a number, string, list, or function",
-                exec_ctx
-            ))
+				self.pos_start, self.pos_end,
+				"Argument must be a number, string, list, or function",
+				exec_ctx
+			))
 	execute_str.arg_names = ['value']
 
 	def execute_int(self, exec_ctx):
@@ -2066,24 +2177,24 @@ class BuiltInFunction(BaseFunction):
 				return RTResult().success(Number(int(value.value)))
 			except ValueError:
 				return RTResult().failure(RTError(
-                    self.pos_start, self.pos_end,
-                    "Invalid string to convert to integer",
-                    exec_ctx
-                ))
+					self.pos_start, self.pos_end,
+					"Invalid string to convert to integer",
+					exec_ctx
+				))
 		elif isinstance(value, List):
 			return RTResult().success(Number(len(value.elements)))
 		elif isinstance(value, Function):
 			return RTResult().failure(RTError(
-				    self.pos_start, self.pos_end,
-                    "Argument must be a number, string, or list.",
-                    exec_ctx
-                ))
+					self.pos_start, self.pos_end,
+					"Argument must be a number, string, or list.",
+					exec_ctx
+				))
 		else:
 			return RTResult().failure(RTError(
-                self.pos_start, self.pos_end,
-                "Argument must be a number, string, or list.",
-                exec_ctx
-            ))
+				self.pos_start, self.pos_end,
+				"Argument must be a number, string, or list.",
+				exec_ctx
+			))
 	execute_int.arg_names = ["value"]
 
 	def execute_type(self, exec_ctx):
@@ -2109,11 +2220,11 @@ class BuiltInFunction(BaseFunction):
 		value = exec_ctx.symbol_table.get("value")
 		if not isinstance(separator, String) or not isinstance(value, List):
 			return RTResult().failure(RTError(
-                self.pos_start, self.pos_end,
-                "Separator must be a string and value must be a list",
-                exec_ctx
-            ))
-		return RTResult().success(String(separator.value.join(value.elements)))
+				self.pos_start, self.pos_end,
+				"Separator must be a string and value must be a list",
+				exec_ctx
+			))
+		return RTResult().success(String(separator.value.join([str(x) for x in value.elements])))
 	execute_join.arg_names = ["separator", "value"]
 
 BuiltInFunction.write = BuiltInFunction("write")
@@ -2179,6 +2290,39 @@ class Interpreter:
 	def visit_StringNode(self, node, context):
 		return RTResult().success(
 			String(node.tok.value).set_context(context).set_pos(node.pos_start, node.pos_end))
+	
+	def visit_ImportNode(self, node, context):
+		res = RTResult()
+		func_name = node.func_name_tok
+		file_name = node.file_name_tok.value
+
+		if not file_name.endswith('.nxs'): file_name += '.nxs'
+
+		try:
+			with open(file_name, 'r') as f:
+				script = f.read()
+		except Exception as e:
+			return res.failure(RTError(
+				node.pos_start, node.pos_end,
+                f"Error reading file '{file_name}': {str(e)}",
+                context
+			))
+
+		new_context = Context(f"<imported from {file_name}>", parent=context)
+		new_context.symbol_table = SymbolTable(global_symbol_table)
+
+		_, error = run(file_name, script, file_name, context=new_context)
+		if error: return res.failure(error)
+
+		for func in func_name:
+			func_value = new_context.symbol_table.get(func.value)
+			if not func_value: return res.failure(RTError(
+					node.pos_start, node.pos_end,
+					f"'{func.value}' is not defined in imported script",
+					context
+				))
+			context.symbol_table.set(func.value, func_value)
+		return res.success(func_value)
 
 	def visit_ListNode(self, node, context):
 		res = RTResult()
@@ -2208,16 +2352,26 @@ class Interpreter:
 
 	def visit_VarAssignNode(self, node, context):
 		res = RTResult()
-		var_name = node.var_name_tok.value
-		var_name2 = node.var_name2_tok.value if node.var_name2_tok else None
-		var_name3 = node.var_name3_tok.value if node.var_name3_tok else None
+    
 		value = res.register(self.visit(node.value_node, context))
-		if res.should_return(): return res
-
-		context.symbol_table.set(var_name, value)
-		if var_name2: context.symbol_table.set(var_name2, value)
-		if var_name3: context.symbol_table.set(var_name3, value)
-		return res.success(value)
+		if res.error: return res
+		
+		# Handle multiple assignment from list return
+		if isinstance(value, List) and (node.var_name2_tok or node.var_name3_tok):
+			vars_to_assign = [
+				node.var_name_tok.value,
+				node.var_name2_tok.value if node.var_name2_tok else None,
+				node.var_name3_tok.value if node.var_name3_tok else None
+			]
+			
+			for i, var in enumerate(vars_to_assign):
+				if var is not None and i < len(value.elements):
+					context.symbol_table.set(var, value.elements[i])
+			return res.success(value.elements[-1] if value.elements else Number.null)
+		else:
+			# Regular assignment
+			context.symbol_table.set(node.var_name_tok.value, value)
+			return res.success(value)
 
 	def visit_BinOpNode(self, node, context):
 		res = RTResult()
@@ -2280,12 +2434,16 @@ class Interpreter:
 		error = node.error
 		value = node.value
 
-		if error == "InvalidSyntaxError": return res.failure(InvalidSyntaxError(node.pos_start, node.pos_end, value if value else None, context))
-		if error == "ExpectedCharError": return res.failure(ExpectedCharError(node.pos_start, node.pos_end, value if value else None, context))
-		if error == "CheckConditionError": return res.failure(CheckConditionError(node.pos_start, node.pos_end, value if value else None, context))
-		if error == "RuntimeError": return res.failure(RTError(node.pos_start, node.pos_end, value if value else None, context))
-		if error == "InvalidOperationError": return res.failure(RTError(node.pos_start, node.pos_end, value if value else None, context))
-		else: return res.failure(RTError(node.pos_start, node.pos_end, value if value else None, context))
+		if error == "InvalidSyntaxError": 
+			return res.failure(InvalidSyntaxError(node.pos_start, node.pos_end, value if value else ""))
+		elif error == "ExpectedCharError": 
+			return res.failure(ExpectedCharError(node.pos_start, node.pos_end, value if value else ""))
+		elif error == "CheckConditionError": 
+			return res.failure(CheckConditionError(node.pos_start, node.pos_end, value if value else ""))
+		elif error == "RuntimeError": 
+			return res.failure(RTError(node.pos_start, node.pos_end, value if value else "", context))
+		else: 
+			return res.failure(RTError(node.pos_start, node.pos_end, value if value else "", context))
 
 	def visit_IfNode(self, node, context):
 		res = RTResult()
@@ -2306,19 +2464,18 @@ class Interpreter:
 			return res.success(Number.null if should_return_null else expr_value)
 
 		return res.success(Number.null)
-	
+
 	def visit_CheckNode(self, node, context):
 		res = RTResult()
-		condition = node.condition
-		condition_value = res.register(self.visit(condition, context))
+		condition = res.register(self.visit(node.condition, context))
 		if res.should_return(): return res
 
-		if condition_value.is_true():
+		if condition.is_true():
 			return res.success(Number.true)
 		else:
 			return res.failure(CheckConditionError(
 				node.pos_start, node.pos_end,
-				f"Expected condition to be True, but got {False if condition_value.value == 0 else True}",
+				node.error if node.error else f"Expected condition to be True, but got {condition.value}"
 			))
 
 	def visit_ForNode(self, node, context):
@@ -2349,7 +2506,7 @@ class Interpreter:
 			i += step_value.value
 
 			value = res.register(self.visit(node.body_node, context))
-			if res.should_return() and res.loop_should_continue == False and res.loop_should_break == False: return res
+			if res.should_return() and not res.loop_should_continue and not res.loop_should_break: return res
 
 			if res.loop_should_continue:
 				continue
@@ -2373,7 +2530,7 @@ class Interpreter:
 			if not condition.is_true(): break
 
 			value = res.register(self.visit(node.body_node, context))
-			if res.should_return() and res.loop_should_continue == False and res.loop_should_break == False: return res
+			if res.should_return() and not res.loop_should_continue and not res.loop_should_break: return res
 
 			if res.loop_should_continue:
 				continue
@@ -2404,28 +2561,35 @@ class Interpreter:
 		args = []
 
 		value_to_call = res.register(self.visit(node.node_to_call, context))
-		if res.should_return(): return res
-		value_to_call = value_to_call.copy().set_pos(node.pos_start, node.pos_end)
+		if res.error: return res
 
 		for arg_node in node.arg_nodes:
 			args.append(res.register(self.visit(arg_node, context)))
-			if res.should_return(): return res
+			if res.error: return res
 
 		return_value = res.register(value_to_call.execute(args))
-		if res.should_return(): return res
-		return_value = return_value.copy().set_pos(node.pos_start, node.pos_end).set_context(context)
+		if res.error: return res
+
 		return res.success(return_value)
 
 	def visit_ReturnNode(self, node, context):
 		res = RTResult()
-
-		if node.node_to_return:
-			value = res.register(self.visit(node.node_to_return, context))
+		
+		if node.nodes_to_return is None:
+			return res.success_return(Number.null)
+		
+		# Evaluate all return expressions
+		values = []
+		for expr_node in node.nodes_to_return:
+			value = res.register(self.visit(expr_node, context))
 			if res.error: return res
+			values.append(value)
+		
+		# Return as a List if multiple values, or single value if just one
+		if len(values) > 1:
+			return res.success_return(List(values))
 		else:
-			value = Number.null
-
-		return res.success_return(value)
+			return res.success_return(values[0] if values else Number.null)
 
 	def visit_ContinueNode(self, node, context):
 		return RTResult().success_continue()
@@ -2443,7 +2607,7 @@ global_symbol_table.set("input", BuiltInFunction.input)
 global_symbol_table.set("int_input", BuiltInFunction.input_int)
 global_symbol_table.set("clear", BuiltInFunction.clear)
 global_symbol_table.set("cls", BuiltInFunction.clear)
-global_symbol_table.set("isnum", BuiltInFunction.is_number)
+global_symbol_table.set("isint", BuiltInFunction.is_number)
 global_symbol_table.set("isstr", BuiltInFunction.is_string)
 global_symbol_table.set("islist", BuiltInFunction.is_list)
 global_symbol_table.set("isfunc", BuiltInFunction.is_function)
@@ -2460,15 +2624,16 @@ global_symbol_table.set("str", BuiltInFunction.str)
 global_symbol_table.set("join", BuiltInFunction.join)
 global_symbol_table.set("type", BuiltInFunction.type)
 
-def run(fn, text=None, file=None):
+def run(fn, text=None, file=None, context=None):
 	# Generate tokens
-	file = str(file)
+	file = str(file) if file else None
 	if file:
 		if not str(file).endswith('.nxs'): file += '.nxs'
 		with open(file, 'r') as f:
 			script = f.read()
 	else:
 		script = text
+	
 	lexer = Lexer(fn, script)
 	tokens, error = lexer.make_tokens()
 	if error: return None, error
