@@ -11,8 +11,3 @@ def map using(lst, func)
 
     return new_list
 end
-
-def add_one using(x)
-    check isint(x)
-    return x + 1
-end
