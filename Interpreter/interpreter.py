@@ -2894,4 +2894,4 @@ def run(fn, text=None, file=None, context=None):
 	context.symbol_table = global_symbol_table
 	result = interpreter.visit(ast.node, context)
 
-	return result.value, result.error, context
+	return result.value, result.error, context if context else Context(file if file else "<program>")
