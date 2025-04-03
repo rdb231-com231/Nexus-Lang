@@ -1,0 +1,5 @@
+def unpack using(lst)
+    check len(lst) >= 3 as "List must have 3 elements max. You can run: [[1, 2], [3, 4], [5, 6]]"
+
+    return get(lst, 0), get(lst, 1), get(lst, 2)
+end
