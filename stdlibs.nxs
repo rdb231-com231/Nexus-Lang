@@ -11,3 +11,9 @@ def map using(lst, func)
 
     return new_list
 end
+
+def square using(x)
+    check isint(x)
+
+    return x * x
+end
