@@ -1,0 +1,19 @@
+def map using(lst, func)
+    check islist(lst)
+    check isfunc(func)
+
+    nexus new_list = []
+
+    range i = 0, to len(lst) do
+        nexus item = func(get(lst, i))
+        append(new_list, item)
+    end
+
+    return new_list
+end
+
+def square using(x)
+    check isint(x)
+
+    return x * x
+end
